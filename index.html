@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Corruptor — SM64</title>
+<style>
+  :root { --accent: #7CFF6B; --danger: #ff3d7f; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: "Courier New", monospace; color: var(--accent); }
+
+  #stage { position: fixed; inset: 0; overflow: hidden; }
+  #game { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; transition: filter 0.1s linear; }
+
+  /* Glitch slices: backdrop-filter lets us corrupt the iframe without reading its pixels */
+  .slice {
+    position: absolute; left: 0; right: 0; height: 4%;
+    pointer-events: none; opacity: 0;
+    backdrop-filter: invert(1) hue-rotate(120deg);
+    -webkit-backdrop-filter: invert(1) hue-rotate(120deg);
+  }
+
+  #noise { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; mix-blend-mode: screen; }
+  #scan {
+    position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.35) 2px 3px);
+  }
+  #vignette {
+    position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.85) 100%);
+  }
+  #flash { position: absolute; inset: 0; pointer-events: none; background: var(--danger); opacity: 0; mix-blend-mode: overlay; }
+
+  #panel {
+    position: fixed; left: 12px; bottom: 12px; z-index: 10;
+    background: rgba(0,0,0,0.75); border: 1px solid var(--accent); padding: 12px 14px;
+    width: 260px; font-size: 13px; letter-spacing: 0.5px;
+  }
+  #panel h1 { font-size: 15px; margin: 0 0 8px; text-transform: uppercase; color: var(--danger); }
+  #panel label { display: block; margin: 8px 0 4px; }
+  #panel input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  button, .btn {
+    background: transparent; color: var(--accent); border: 1px solid var(--accent);
+    padding: 6px 10px; font: inherit; cursor: pointer; text-decoration: none; text-align: center;
+  }
+  button:hover, .btn:hover { background: var(--accent); color: #000; }
+  #corrupt { border-color: var(--danger); color: var(--danger); }
+  #corrupt:hover { background: var(--danger); color: #000; }
+  #status { margin-top: 8px; font-size: 11px; opacity: 0.7; min-height: 14px; }
+  #panel.hidden #body { display: none; }
+  #toggle { position: absolute; top: 6px; right: 6px; padding: 2px 6px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <iframe id="game"
+          src="https://www.retrogames.cc/n64-games/sm64-z64.html"
+          allow="fullscreen; gamepad; autoplay"
+          referrerpolicy="no-referrer"
+          title="Super Mario 64"></iframe>
+
+  <div id="slices"></div>
+  <canvas id="noise"></canvas>
+  <div id="scan"></div>
+  <div id="vignette"></div>
+  <div id="flash"></div>
+
+  <div id="panel">
+    <button id="toggle">–</button>
+    <h1>Corruptor</h1>
+    <div id="body">
+      <label for="intensity">Corruption: <span id="val">35</span>%</label>
+      <input type="range" id="intensity" min="0" max="100" value="35">
+      <div class="row">
+        <button id="corrupt">Corrupt</button>
+        <button id="auto">Auto: off</button>
+        <button id="stabilize">Stabilize</button>
+        <a class="btn" href="https://www.retrogames.cc/n64-games/sm64-z64.html" target="_blank" rel="noopener">Original</a>
+      </div>
+      <div id="status">Signal stable.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const SLICE_COUNT = 14;
+  const FILTERS = [
+    "invert(1) hue-rotate(120deg)",
+    "hue-rotate(260deg) saturate(3)",
+    "contrast(3) brightness(1.4)",
+    "grayscale(1) contrast(2.5)",
+    "invert(1)",
+    "saturate(4) hue-rotate(-80deg)"
+  ];
+
+  const game = document.getElementById("game");
+  const slicesEl = document.getElementById("slices");
+  const flash = document.getElementById("flash");
+  const noise = document.getElementById("noise");
+  const ctx = noise.getContext("2d");
+  const slider = document.getElementById("intensity");
+  const valEl = document.getElementById("val");
+  const status = document.getElementById("status");
+  const autoBtn = document.getElementById("auto");
+  const panel = document.getElementById("panel");
+
+  let intensity = 0.35;
+  let autoOn = false;
+  let autoTimer = null;
+  let t = 0;
+
+  // Build glitch slices
+  const slices = [];
+  for (let i = 0; i < SLICE_COUNT; i++) {
+    const s = document.createElement("div");
+    s.className = "slice";
+    slicesEl.appendChild(s);
+    slices.push(s);
+  }
+
+  // Noise canvas at low res for a cheap CRT grain
+  function resizeNoise() {
+    noise.width = 240;
+    noise.height = 135;
+  }
+  resizeNoise();
+  window.addEventListener("resize", resizeNoise);
+
+  function drawNoise() {
+    const img = ctx.createImageData(noise.width, noise.height);
+    const d = img.data;
+    const amt = intensity * 255;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = Math.random() * amt;
+      d[i] = v; d[i + 1] = v; d[i + 2] = v; d[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  // Continuous jitter on the game frame, scaled by intensity
+  function frame() {
+    t += 0.016;
+    const k = intensity;
+    if (k > 0.001) {
+      const hue = Math.sin(t * 0.7) * 25 * k;
+      const contrast = 1 + Math.sin(t * 1.3) * 0.15 * k;
+      const sat = 1 + k * 0.6;
+      game.style.filter = `hue-rotate(${hue}deg) contrast(${contrast}) saturate(${sat})`;
+      if (Math.random() < k * 0.08) game.style.transform = `translateX(${(Math.random() - 0.5) * 12 * k}px)`;
+      else game.style.transform = "";
+      drawNoise();
+      noise.style.opacity = String(0.08 + k * 0.35);
+    } else {
+      game.style.filter = "";
+      game.style.transform = "";
+      ctx.clearRect(0, 0, noise.width, noise.height);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // A burst: slices jump to random bands with inverted/hue-shifted colors
+  function burst(strength = intensity) {
+    const n = Math.max(2, Math.round(strength * SLICE_COUNT));
+    for (let i = 0; i < n; i++) {
+      const s = slices[Math.floor(Math.random() * slices.length)];
+      s.style.top = (Math.random() * 100) + "%";
+      s.style.height = (2 + Math.random() * 10 * strength) + "%";
+      s.style.transform = `translateX(${(Math.random() - 0.5) * 200 * strength}px)`;
+      s.style.backdropFilter = s.style.webkitBackdropFilter = FILTERS[Math.floor(Math.random() * FILTERS.length)];
+      s.style.opacity = "1";
+      const ms = 60 + Math.random() * 220;
+      setTimeout(() => { s.style.opacity = "0"; }, ms);
+    }
+    if (Math.random() < strength * 0.5) {
+      flash.style.opacity = String(0.1 + Math.random() * 0.25 * strength);
+      setTimeout(() => { flash.style.opacity = "0"; }, 50 + Math.random() * 80);
+    }
+    status.textContent = "Signal corrupted at " + Math.round(strength * 100) + "%.";
+  }
+
+  function scheduleAuto() {
+    clearTimeout(autoTimer);
+    if (!autoOn) return;
+    const delay = 400 + Math.random() * 2200 * (1.1 - intensity);
+    autoTimer = setTimeout(() => {
+      if (Math.random() < 0.3 + intensity * 0.7) burst(Math.max(intensity, 0.2) * (0.6 + Math.random() * 0.8));
+      scheduleAuto();
+    }, delay);
+  }
+
+  slider.addEventListener("input", () => {
+    intensity = slider.value / 100;
+    valEl.textContent = slider.value;
+  });
+
+  document.getElementById("corrupt").addEventListener("click", () => {
+    burst(Math.min(1, intensity + 0.4));
+  });
+
+  autoBtn.addEventListener("click", () => {
+    autoOn = !autoOn;
+    autoBtn.textContent = "Auto: " + (autoOn ? "on" : "off");
+    status.textContent = autoOn ? "Auto corruption engaged." : "Auto corruption halted.";
+    scheduleAuto();
+  });
+
+  document.getElementById("stabilize").addEventListener("click", () => {
+    autoOn = false;
+    autoBtn.textContent = "Auto: off";
+    clearTimeout(autoTimer);
+    intensity = 0;
+    slider.value = 0;
+    valEl.textContent = "0";
+    slices.forEach(s => s.style.opacity = "0");
+    status.textContent = "Signal stable.";
+  });
+
+  document.getElementById("toggle").addEventListener("click", (e) => {
+    panel.classList.toggle("hidden");
+    e.target.textContent = panel.classList.contains("hidden") ? "+" : "–";
+  });
+
+  // Keyboard shortcut: C = corrupt, A = auto, S = stabilize
+  window.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT") return;
+    const k = e.key.toLowerCase();
+    if (k === "c") burst(Math.min(1, intensity + 0.4));
+    if (k === "a") autoBtn.click();
+    if (k === "s") document.getElementById("stabilize").click();
+  });
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+  </html>
